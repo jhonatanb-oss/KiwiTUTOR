@@ -1,10 +1,23 @@
 import os
 import sys
+import threading
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from openai import OpenAI
+from flask import Flask
 
-# Validar variables de entorno al inicio
+# === Servidor "dummy" para mantener Render activo ===
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "⚡️ Slack Bot está corriendo."
+
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+# === Validar variables de entorno ===
 required_env_vars = {
     "SLACK_BOT_TOKEN": os.environ.get("SLACK_BOT_TOKEN"),
     "SLACK_APP_TOKEN": os.environ.get("SLACK_APP_TOKEN"),
@@ -13,21 +26,18 @@ required_env_vars = {
 
 missing_vars = [name for name, value in required_env_vars.items() if not value]
 if missing_vars:
-    print(f"❌ Error: Faltan las siguientes variables de entorno: {', '.join(missing_vars)}")
-    print("Por favor configura estas variables antes de ejecutar el bot.")
+    print(f"❌ Faltan variables: {', '.join(missing_vars)}")
     sys.exit(1)
 
-# Inicializa clientes con variables de entorno
+# === Inicializa Slack y OpenAI ===
 slack_app = App(token=required_env_vars["SLACK_BOT_TOKEN"])
 client = OpenAI(api_key=required_env_vars["OPENAI_API_KEY"])
 
-# Cuando alguien mencione al bot
+# === Eventos de Slack ===
 @slack_app.event("app_mention")
 def handle_mention(event, say):
     user = event["user"]
     text = event.get("text", "")
-    
-    # Limpia el texto removiendo la mención del bot
     prompt = text.split(">", 1)[-1].strip() if ">" in text else text
 
     if not prompt:
@@ -35,7 +45,6 @@ def handle_mention(event, say):
         return
 
     try:
-        # Genera respuesta con ChatGPT
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -45,32 +54,18 @@ def handle_mention(event, say):
             temperature=0.7,
             max_tokens=500
         )
-
-        answer = response.choices[0].message.content
-        say(f"<@{user}> {answer}")
+        say(f"<@{user}> {response.choices[0].message.content}")
     except Exception as e:
-        say(f"<@{user}> ❌ Lo siento, ocurrió un error al procesar tu solicitud.")
-        print(f"Error en handle_mention: {type(e).__name__}: {str(e)}")
+        say(f"<@{user}> ❌ Error al procesar tu solicitud.")
+        print(f"Error en handle_mention: {type(e).__name__}: {e}")
 
-# Maneja mensajes directos al bot
 @slack_app.event("message")
 def handle_dm(event, say):
-    # Filtrar mensajes del propio bot y subtipos no deseados
-    if event.get("bot_id") is not None:
+    if event.get("bot_id") or event.get("subtype") or event.get("channel_type") != "im":
         return
-    
-    # Solo procesar mensajes de usuario estándar (ignorar ediciones, archivos, etc.)
-    if event.get("subtype") is not None:
-        return
-    
-    # Solo responde a mensajes directos (DMs)
-    if event.get("channel_type") != "im":
-        return
-    
-    text = event.get("text")
+    text = event.get("text", "")
     if not text:
         return
-    
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -81,20 +76,20 @@ def handle_dm(event, say):
             temperature=0.7,
             max_tokens=500
         )
-        
-        answer = response.choices[0].message.content
-        say(answer)
+        say(response.choices[0].message.content)
     except Exception as e:
-        say(f"❌ Lo siento, ocurrió un error al procesar tu solicitud.")
-        print(f"Error en handle_dm: {type(e).__name__}: {str(e)}")
+        say("❌ Error al procesar tu solicitud.")
+        print(f"Error en handle_dm: {type(e).__name__}: {e}")
 
-# Inicia el bot
+# === Inicio del bot y servidor ===
 if __name__ == "__main__":
-    print("⚡️ Bot de Slack con ChatGPT iniciando...")
+    print("⚡️ Iniciando Slack Bot...")
+    threading.Thread(target=run_flask, daemon=True).start()  # Flask corre en segundo plano
     try:
         handler = SocketModeHandler(slack_app, required_env_vars["SLACK_APP_TOKEN"])
-        print("✅ Bot conectado y listo!")
+        print("✅ Bot conectado y listo.")
         handler.start()
     except Exception as e:
-        print(f"❌ Error al iniciar el bot: {type(e).__name__}: {str(e)}")
+        print(f"❌ Error al iniciar el bot: {type(e).__name__}: {e}")
         sys.exit(1)
+
